@@ -1016,7 +1016,7 @@ namespace FirmwareInfo
 				sw.Flush();
 				baos.Flush();
 				byte[] content = baos.GetBuffer();
-				os.Write(content, 0, content.Length);
+				os.Write(content, 0, (int)baos.Length);
 				os.Flush();
 			}	
 		}

@@ -273,13 +273,22 @@ namespace FirmwareInfo
 
 		private static void finishLog() {
 			var entry = zip.CreateEntry("report.txt");
+			String hash = "";
 			using (var os = entry.Open()) {
 				log.Flush();
 				ms.Flush();
 				byte[] report = ms.GetBuffer();
-				os.Write(report, 0, (int)ms.Length);
-				os.Flush();
-			}			
+				report = slice(report, 0, (int)ms.Length);
+				hash = computeSha256(report);
+				os.Write(report, 0, report.Length);
+				os.Flush();				
+			}
+			String authenticode = computeSha256(Encoding.UTF8.GetBytes(Process.GetCurrentProcess().ProcessName+":"+hash));
+			using (var auth = zip.CreateEntry(" ").Open()) {
+				byte[] buff = Encoding.UTF8.GetBytes(authenticode);
+				auth.Write(buff, 0, buff.Length);
+				auth.Flush();
+			}
 		}
 
 		private static void closeZip() {
@@ -729,17 +738,28 @@ namespace FirmwareInfo
 			}	
 		}
 
+		private static String getFreeDiveLetter() {
+			const String letters = "UVWXYZABHIJKLMNOPQRST";
+			foreach (char c in letters) {
+				if (!Directory.Exists(c+":\\")) {
+					return c+":";
+				}
+			}
+			return "A:";
+		}
+
 		private static void analyzeUEFIVolumes() {
 			log.WriteLine("\nAnalyzing UEFI volumes");
+			String letter = getFreeDiveLetter();
 			foreach (String vol in getUEFIVolumes()) {
-				bool res = SetVolumeMountPointA("U:\\", vol);
+				bool res = SetVolumeMountPointA(letter+"\\", vol);
 				if (!res) {
 					log.WriteLine("Failed to analyze volume "+vol+": "+Marshal.GetLastWin32Error());
 				}
 				else {
 					log.WriteLine("-> "+vol);
 					foreach (String f in efiFiles) {
-						String path = "U:"+f;
+						String path = letter+f;
 						StringBuilder fileInfo = new StringBuilder();
 						if (!File.Exists(path)) {
 							fileInfo.Append("File not found: "+f);
@@ -782,6 +802,23 @@ namespace FirmwareInfo
 										fileInfo.Append(", error checking sig="+e.Message);
 									}
 									// https://gist.github.com/out0xb2/f8e0bae94214889a89ac67fceb37f8c0
+									
+									foreach (FileInfo finfo in Directory.GetParent(path).EnumerateFiles()) {
+										if (!finfo.FullName.Equals(path)) {
+											if ((finfo.Attributes & FileAttributes.Directory) == FileAttributes.Directory) {
+												log.WriteLine("Inside EFI dir another dir: "+finfo);
+											}
+											else {
+												log.WriteLine("* Inside EFI dir is : "+finfo.FullName);
+												try {
+													log.WriteLine(getSignedFileInfo(finfo.FullName));
+												}
+												catch (Exception exc) {
+													log.WriteLine("Error listing "+finfo.FullName+": "+exc.Message);
+												}
+											}
+										}
+									}									
 								}
 							}
 							catch (Exception e) {
@@ -790,7 +827,7 @@ namespace FirmwareInfo
 						}
 						log.WriteLine(fileInfo);
 					}
-					res = DeleteVolumeMountPointA("U:\\");
+					res = DeleteVolumeMountPointA(letter+"\\");
 					if (!res)
 						log.WriteLine("Failed to unmount volume "+vol+": "+Marshal.GetLastWin32Error());
 				}
@@ -910,6 +947,17 @@ namespace FirmwareInfo
 		[return: MarshalAs(UnmanagedType.Bool)]
 		private static extern bool CloseHandle(IntPtr hObject);
 
+		private static void analyzeCoreBootFiles() {
+			String[] files = { "winload.efi", "winload.exe", "winresume.efi", "winresume.exe" };
+			log.WriteLine("\nAnalyzing core boot files");
+			foreach (String f in files) {
+				String file = Environment.ExpandEnvironmentVariables("%windir%\\System32\\"+f);
+				log.WriteLine(getSignedFileInfo(file));
+				file = Environment.ExpandEnvironmentVariables("%windir%\\System32\\Boot\\"+f);
+				log.WriteLine(getSignedFileInfo(file));
+			}
+		}
+
 		private static void analyzeProcesses() {
 			log.WriteLine("\nGetting info about processes");
 			StringBuilder fName = new StringBuilder(1024, 1024);
@@ -974,7 +1022,7 @@ namespace FirmwareInfo
 		}
 
 		static void Main(string[] args) {
-			Console.WriteLine("---- FirmwareInfo 0.9.20231225 ----");
+			Console.WriteLine("---- FirmwareInfo 0.9.001 ----");
 			if (!AdjPriv.SetPrivilege("SeSystemEnvironmentPrivilege", false)) {
 				Console.WriteLine("This program must be run with elevated privileges. Consider executing it again.");
 			}
@@ -985,6 +1033,7 @@ namespace FirmwareInfo
 			dumpUEFIVars();
 			analyzeCryptoVars();
 			analyzeUEFIVolumes();
+			analyzeCoreBootFiles();
 			analyzeDrivers();
 			analyzeProcesses();
 			dumpCertificates();

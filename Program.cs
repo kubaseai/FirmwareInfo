@@ -4,6 +4,7 @@ using System.Collections.Specialized;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -1035,16 +1036,31 @@ namespace FirmwareInfo
 			return sb.ToString();
 		}
 
+		private static String getWindowsVersion() {
+			string HKLMWinNTCurrent = "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";
+            string osName = Registry.GetValue(HKLMWinNTCurrent, "productName", "").ToString();
+            string osRelease = Registry.GetValue(HKLMWinNTCurrent, "ReleaseId", "").ToString();
+            string osVersion = Environment.OSVersion.Version.ToString();
+            string osType = Environment.Is64BitOperatingSystem ? "64-bit" : "32-bit";
+            string osBuild = Registry.GetValue(HKLMWinNTCurrent, "CurrentBuildNumber", "").ToString();
+            string osUBR = Registry.GetValue(HKLMWinNTCurrent, "UBR", "").ToString();
+			StringBuilder sb = new StringBuilder();
+			sb.Append(osName).Append(" ").Append(osRelease).Append(osVersion).Append(" ").Append(osType).Append(" build ");
+			sb.Append(osBuild).Append(" UBR ").Append(osUBR);
+            return sb.ToString();
+		}
+
 		private static void analyzeUEFIFirmwareResources() {
 			log.WriteLine("\nAnalyzing UEFI Firmware Resources");
 			try {
+				log.WriteLine("OS version info: "+getWindowsVersion());
 				String sbPolicyGuid = "";
 				using (RegistryKey sbState = Registry.LocalMachine.OpenSubKey("SYSTEM\\CurrentControlSet\\Control\\SecureBoot\\State")) {
 					sbPolicyGuid = sbState.GetValue("PolicyPublisher")+"";							
 				}
 				const String EXPECTED_SB_POLICY = "{77fa9abd-0359-4d32-bd60-28f4e78f784b}";
 				if (!EXPECTED_SB_POLICY.Equals(sbPolicyGuid)) {
-					log.WriteLine("Expected SecureBoot policy "+EXPECTED_SB_POLICY+" but found "+sbPolicyGuid);
+					log.WriteLine("Expected SecureBoot policy "+EXPECTED_SB_POLICY+" but found '"+sbPolicyGuid+"'");
 				}
 				else {
 					log.WriteLine("Expected SecureBoot policy "+EXPECTED_SB_POLICY+" found");
@@ -1054,6 +1070,7 @@ namespace FirmwareInfo
 						using (RegistryKey resource = uefi.OpenSubKey(name)) {
 							foreach (String _name in resource.GetSubKeyNames()) {
 								using (RegistryKey rsrc = resource.OpenSubKey(_name)) {
+									// contains inf path, to get via C:\Windows\System32\DriverStore\FileRepository\c_firmware.inf_amd64_8461b7352aaa3ec1
 									String desc = rsrc.GetValue("DeviceDesc")+"";
 									String driver = rsrc.GetValue("Driver")+"";
 									Object hw = rsrc.GetValue("HardwareID");
@@ -1065,8 +1082,20 @@ namespace FirmwareInfo
 									if (ids!=null && ids is String[]) {
 										ids = flatOutTab((String[])ids);
 									}
-									log.Write("UEFI resource "+name+"["+_name+"]: desc=\""+desc+"\", driver=\""+driver+
+									log.WriteLine("UEFI resource "+name+"["+_name+"]: desc=\""+desc+"\", driver=\""+driver+
 										"\", hw=\""+hw+"\", compat=\""+ids+"\", vendor=\""+vendor+"\"");
+									int pos = desc.ToLower().IndexOf(".inf,");
+									if (pos!=-1) {
+										String fileRepo = Environment.ExpandEnvironmentVariables("%windir%\\System32\\DriverStore\\FileRepository");
+										String infFile = desc.Substring(1, pos+3);
+										String filter = (fileRepo+"\\"+infFile+"_").ToLower();
+										foreach (String dirPath in Directory.EnumerateDirectories(fileRepo).Where( path => path.ToLower().StartsWith(filter))) {
+											log.WriteLine("Driver was unpacked and stored in "+dirPath);
+											foreach (String f in Directory.EnumerateFiles(dirPath)) {
+												log.WriteLine("* To this driver belongs: "+getSignedFileInfo(f));
+											}
+										}
+									}
 								}
 							}
 						}

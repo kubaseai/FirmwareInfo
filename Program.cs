@@ -11,6 +11,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 
 using Microsoft.Security.Extensions;
+using Microsoft.Win32;
 
 /** FirmwareInfo (C) 2023 Jakub Jozwicki */
 
@@ -1021,8 +1022,64 @@ namespace FirmwareInfo
 			}	
 		}
 
+		private static String flatOutTab(String[] tab) {
+			StringBuilder sb = new StringBuilder();
+			bool notEmpty = false;
+			foreach (String s in (String[])tab) {
+				sb.Append(s).Append(",");
+				notEmpty = true;
+			}
+			if (notEmpty) {
+				sb.Length--;				
+			}
+			return sb.ToString();
+		}
+
+		private static void analyzeUEFIFirmwareResources() {
+			log.WriteLine("\nAnalyzing UEFI Firmware Resources");
+			try {
+				String sbPolicyGuid = "";
+				using (RegistryKey sbState = Registry.LocalMachine.OpenSubKey("SYSTEM\\CurrentControlSet\\Control\\SecureBoot\\State")) {
+					sbPolicyGuid = sbState.GetValue("PolicyPublisher")+"";							
+				}
+				const String EXPECTED_SB_POLICY = "{77fa9abd-0359-4d32-bd60-28f4e78f784b}";
+				if (!EXPECTED_SB_POLICY.Equals(sbPolicyGuid)) {
+					log.WriteLine("Expected SecureBoot policy "+EXPECTED_SB_POLICY+" but found "+sbPolicyGuid);
+				}
+				else {
+					log.WriteLine("Expected SecureBoot policy "+EXPECTED_SB_POLICY+" found");
+				}
+				using (RegistryKey uefi = Registry.LocalMachine.OpenSubKey("SYSTEM\\CurrentControlSet\\Enum\\UEFI")) {
+					foreach (String name in uefi.GetSubKeyNames()) {
+						using (RegistryKey resource = uefi.OpenSubKey(name)) {
+							foreach (String _name in resource.GetSubKeyNames()) {
+								using (RegistryKey rsrc = resource.OpenSubKey(_name)) {
+									String desc = rsrc.GetValue("DeviceDesc")+"";
+									String driver = rsrc.GetValue("Driver")+"";
+									Object hw = rsrc.GetValue("HardwareID");
+									Object ids = rsrc.GetValue("CompatibleIDs");
+									String vendor = rsrc.GetValue("Mfg")+"";
+									if (hw!=null && hw is String[]) {
+										hw = flatOutTab((String[])hw);
+									}
+									if (ids!=null && ids is String[]) {
+										ids = flatOutTab((String[])ids);
+									}
+									log.Write("UEFI resource "+name+"["+_name+"]: desc=\""+desc+"\", driver=\""+driver+
+										"\", hw=\""+hw+"\", compat=\""+ids+"\", vendor=\""+vendor+"\"");
+								}
+							}
+						}
+					}
+				}
+			}
+			catch (Exception exc) {
+				log.WriteLine("Can't enumerate UEFI FW entries: "+exc.Message);
+			}
+		}
+
 		static void Main(string[] args) {
-			Console.WriteLine("---- FirmwareInfo 0.9.001 ----");
+			Console.WriteLine("---- FirmwareInfo 0.9.002 ----");
 			if (!AdjPriv.SetPrivilege("SeSystemEnvironmentPrivilege", false)) {
 				Console.WriteLine("This program must be run with elevated privileges. Consider executing it again.");
 			}
@@ -1037,6 +1094,7 @@ namespace FirmwareInfo
 			analyzeDrivers();
 			analyzeProcesses();
 			dumpCertificates();
+			analyzeUEFIFirmwareResources();
 			finishLog();
 			closeZip();
 			Console.WriteLine("> Done (end="+DateTime.Now+"). Please open with 7zip.");

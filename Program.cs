@@ -960,48 +960,87 @@ namespace FirmwareInfo
 			}
 		}
 
+		[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+        public struct PROCESSENTRY32W {
+            public uint dwSize;
+            public uint cntUsage;
+            public uint th32ProcessID;
+            public IntPtr th32DefaultHeapID;
+            public uint th32ModuleID;
+            public uint cntThreads;
+            public uint th32ParentProcessID;
+            public int pcPriClassBase;
+            public uint dwFlags;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string szExeFile;
+        };
+
+		[DllImport("kernel32.dll")]
+        public static extern IntPtr CreateToolhelp32Snapshot(UInt32 dwFlagsdes, UInt32 th32ProcessID);
+
+        [DllImport("kernel32", EntryPoint = "Process32First", SetLastError = true, CharSet = CharSet.Auto)]
+		[return: MarshalAs(UnmanagedType.Bool)]
+		public static extern bool Process32First(IntPtr hSnapshot, ref PROCESSENTRY32W lppe);
+
+		[DllImport("kernel32", EntryPoint = "Process32Next", CharSet = CharSet.Auto)]
+		[return: MarshalAs(UnmanagedType.Bool)]
+		public static extern bool Process32Next(IntPtr hSnapshot, ref PROCESSENTRY32W lppe);
+
+        public static Dictionary<int, String> getProcessList() {
+            IntPtr handle = CreateToolhelp32Snapshot(2, 0);
+            PROCESSENTRY32W p32 = new PROCESSENTRY32W();
+            int size = System.Runtime.InteropServices.Marshal.SizeOf(typeof(PROCESSENTRY32W));
+            p32.dwSize = Convert.ToUInt32(size);
+            bool blFirstProcess = Process32First(handle, ref p32);
+			Dictionary<int, string> returnableProcesses = new Dictionary<int, string>();
+            if (blFirstProcess) {
+                do {
+                    int PID = (int)p32.th32ProcessID;
+					if (PID > 0) {
+                    	returnableProcesses.Add(PID, p32.szExeFile.ToString());
+					}
+				}
+                while (Process32Next(handle, ref p32));
+            }
+            return returnableProcesses;
+        }
+
 		private static void analyzeProcesses() {
 			log.WriteLine("\nGetting info about processes");
-			StringBuilder fName = new StringBuilder(1024, 1024);
+			Process.EnterDebugMode();
 			Dictionary<String,bool> alreadySeen = new Dictionary<string, bool>();
-			foreach (Process p in Process.GetProcesses()) {
-				String name = p.ProcessName;
-				String file = p.StartInfo.FileName;
-				if (file==null || file.Length==0)
-					file = name.EndsWith(".exe") || name.EndsWith("com") ? name : name+".exe";
-				const int PROCESS_VM_READ = 0x00000010;
-        		const int PROCESS_QUERY_INFORMATION = 0x00000400;
-				IntPtr handle = IntPtr.Zero;
+			Dictionary<int, string> processFullNames = new Dictionary<int, string>();
+			Dictionary<int, string> processShortNames = new Dictionary<int, string>();
+			StringBuilder fName = new StringBuilder(1024, 1024);				
+			foreach (KeyValuePair<int, String> entry in getProcessList()) {
+				int id = entry.Key;
+				String name = entry.Value;
 				try {
-					handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, p.Id);
-					int errCode = Marshal.GetLastWin32Error();
-					if (errCode!=0) {
-						log.WriteLine("Handle error for "+name+" and file "+file+": "+errCode);
-					}
-					String fileName = GetFileNameFromHandle(handle, fName, 1024);
-					errCode = Marshal.GetLastWin32Error();
-					if (errCode!=0) {
-						log.WriteLine("FileName error for "+name+" and file "+file+": "+errCode);
-					}
-					if (fileName!=null) {
-						bool seen = alreadySeen.ContainsKey(fileName);
-						alreadySeen[fileName]=true;
-						log.WriteLine("Proces "+p.Id+"="+name+", "+(seen ? "already seen" : getSignedFileInfo(fileName)));
-					}
-					else {
-						log.WriteLine("Proces "+p.Id+"="+name+", File="+file+", Path unknown so assuming %windr%");
-						fileName = Environment.ExpandEnvironmentVariables("%windir%\\System32\\"+file);
-						log.WriteLine("Proces "+p.Id+"="+name+", "+getSignedFileInfo(fileName));
-					}
+					Process p = Process.GetProcessById(id);
+					fName.Clear();
+					GetFileNameFromHandle(p.Handle, fName, 1024);
+					String fileName = fName.ToString();
+					processFullNames.Add(id, fileName);
 				}
-				catch (Exception e) {
-					log.WriteLine("Proces "+p.Id+"="+name+", File="+file+", error getting details="+e.Message);
-				}
-				finally {
-					if (handle.ToInt32()!=0)
-						CloseHandle(handle);
-				}
+				catch (Exception exc) {
+					log.WriteLine("Error getting details for process "+id+"="+name+": "+exc.Message+". Assuming %windir% placement.");
+					String fileName = Environment.ExpandEnvironmentVariables("%windir%\\System32\\"+name);
+					processShortNames.Add(id, fileName);
+				}				
 			}
+
+			foreach (KeyValuePair<int, String> entry in processFullNames) {
+				String fileName = entry.Value;
+				bool seen = alreadySeen.ContainsKey(fileName);
+				alreadySeen[fileName]=true;
+				log.WriteLine("Proces "+entry.Key+", "+(seen ? "already seen "+fileName : getSignedFileInfo(fileName)));				
+			}
+			foreach (KeyValuePair<int, String> entry in processShortNames) {
+				String fileName = entry.Value;
+				bool seen = alreadySeen.ContainsKey(fileName);
+				alreadySeen[fileName]=true;
+				log.WriteLine("Proces "+entry.Key+", "+(seen ? "already seen "+fileName : getSignedFileInfo(fileName)));				
+			}
+			Process.LeaveDebugMode();
 		}
 
 		private static void dumpCertificates() {
@@ -1108,7 +1147,7 @@ namespace FirmwareInfo
 		}
 
 		static void Main(string[] args) {
-			Console.WriteLine("---- FirmwareInfo 0.9.002 ----");
+			Console.WriteLine("---- FirmwareInfo 0.9.003 ----");
 			if (!AdjPriv.SetPrivilege("SeSystemEnvironmentPrivilege", false)) {
 				Console.WriteLine("This program must be run with elevated privileges. Consider executing it again.");
 			}
